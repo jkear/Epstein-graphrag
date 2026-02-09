@@ -3,7 +3,11 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+# Load .env file from project root
+load_dotenv()
 
 
 class Config(BaseModel):
