@@ -67,6 +67,10 @@ def process_text_document(
 
     try:
         # Create Marker configuration with Gemini LLM integration
+        # Note: Use environment variable or pass directly
+        import os
+        os.environ["GOOGLE_API_KEY"] = gemini_api_key
+        
         config = {
             "use_llm": True,
             "gemini_api_key": gemini_api_key,
