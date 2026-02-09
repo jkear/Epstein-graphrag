@@ -31,7 +31,7 @@ class Config(BaseModel):
 
     # Gemini (free tier)
     gemini_api_key: str = Field(default=os.getenv("GEMINI_API_KEY", ""))
-    gemini_model: str = "gemini-3-flash-preview"
+    gemini_model: str = "gemini-2.5-flash"  # More stable than gemini-3-flash-preview
 
     # Local LLM (Ollama)
     local_llm_model: str = "mlx-community/Mistral-7B-Instruct-v0.3"

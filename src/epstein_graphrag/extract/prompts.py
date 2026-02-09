@@ -4,33 +4,136 @@ All prompts used for entity extraction are defined here.
 Prompts contain no logic — only text templates.
 """
 
-ENTITY_EXTRACTION_SYSTEM = """You are an expert legal document analyst specializing in evidence
-analysis. Extract all entities and relationships from the provided document text.
+TEXT_ENTITY_EXTRACTION_PROMPT = """You are a forensic document analyst extracting structured evidence from legal documents related to the Jeffrey Epstein case.
 
-Return valid JSON with the following structure:
-{
-  "persons": [{"name": "...", "role": "...", "aliases": [...]}],
-  "organizations": [{"name": "...", "type": "..."}],
-  "locations": [{"name": "...", "type": "...", "address": "..."}],
-  "events": [{"description": "...", "date": "...", "location": "...", "participants": [...]}],
-  "allegations": [{"description": "...", "victim": "...", "accused": "...", "date": "..."}],
-  "relationships": [{"source": "...", "target": "...", "type": "...", "context": "..."}]
-}
-
-Be thorough. Extract every person, place, date, and allegation mentioned.
-Preserve exact names as they appear in the document.
-"""
-
-ENTITY_EXTRACTION_USER = """Analyze the following document and extract all entities and
-relationships. Document ID: {doc_id}
-
+DOCUMENT ID: {doc_id}
+DOCUMENT TYPE: {doc_type}
+DOCUMENT TEXT:
 ---
 {text}
 ---
 
-Extract all persons, organizations, locations, events, allegations, and relationships.
-Return valid JSON only."""
+Extract ALL entities and relationships from this document. Be thorough — every name, date, location, and event matters.
 
+Respond in this exact JSON format:
+{{
+  "people": [
+    {{
+      "name": "Full Name as written",
+      "aliases": ["any other names used for this person in the document"],
+      "role": "perpetrator|victim|witness|associate|legal|law_enforcement|unknown",
+      "context": "One sentence explaining why this person appears in this document",
+      "excerpt": "Exact quote from the document mentioning this person"
+    }}
+  ],
+  "locations": [
+    {{
+      "name": "Location name",
+      "address": "Full address if available, otherwise empty string",
+      "location_type": "residence|island|airport|office|school|hotel|vehicle|unknown",
+      "context": "Why this location is mentioned",
+      "excerpt": "Exact quote mentioning this location"
+    }}
+  ],
+  "organizations": [
+    {{
+      "name": "Organization name",
+      "org_type": "company|foundation|school|government|legal|financial|unknown",
+      "context": "Why this organization is mentioned",
+      "excerpt": "Exact quote"
+    }}
+  ],
+  "events": [
+    {{
+      "event_type": "flight|meeting|transaction|phone_call|visit|assault|arrest|testimony|unknown",
+      "date": "YYYY-MM-DD if available, otherwise approximate or empty string",
+      "description": "What happened",
+      "participants": ["Person Name 1", "Person Name 2"],
+      "location": "Location name if mentioned",
+      "excerpt": "Exact quote describing this event"
+    }}
+  ],
+  "allegations": [
+    {{
+      "description": "What is being alleged",
+      "accused": ["Person Name"],
+      "victims": ["Person Name if mentioned"],
+      "severity": "critical|severe|moderate|minor",
+      "status": "confirmed_by_court|alleged_under_oath|alleged|disputed|rumored",
+      "excerpt": "Exact quote supporting this allegation"
+    }}
+  ],
+  "associations": [
+    {{
+      "person_a": "Person Name",
+      "person_b": "Person Name",
+      "nature": "employer|friend|associate|co-conspirator|victim-perpetrator|legal|familial|unknown",
+      "timeframe": "Date range or description if available",
+      "excerpt": "Exact quote establishing this connection"
+    }}
+  ]
+}}
+
+RULES:
+1. Extract EVERY person mentioned, even in passing. Every name matters.
+2. Include exact quotes (excerpts) from the document for EVERY extracted entity.
+3. If a person's role is unclear, use "unknown" — do not guess.
+4. If a date is approximate, prefix with "~" (e.g., "~1999-06").
+5. For allegations, distinguish between court-confirmed facts and unverified claims.
+6. Extract associations between people even if the nature is unclear.
+7. Do NOT hallucinate entities that are not in the document text.
+8. If the document contains no extractable entities, return empty arrays for all fields.
+"""
+
+PHOTO_ENTITY_EXTRACTION_PROMPT = """You are a forensic evidence analyst reviewing the analysis of a photograph from the Jeffrey Epstein case.
+
+DOCUMENT ID: {doc_id}
+VISION ANALYSIS:
+---
+Scene: {scene_description}
+Objects: {objects_detected}
+Anomalies: {anomalies_noted}
+Faces: {faces_detected}
+Visible Text: {visible_text}
+Estimated Period: {estimated_period}
+Evidence Relevance: {evidence_relevance}
+---
+
+Based on this analysis, extract any identifiable entities:
+
+{{
+  "locations": [
+    {{
+      "name": "Best guess at location name based on visual clues",
+      "location_type": "Type of space shown",
+      "context": "What this location appears to be based on the photograph",
+      "visual_clues": "What in the photo suggests this identification"
+    }}
+  ],
+  "objects_of_interest": [
+    {{
+      "description": "Object description",
+      "evidence_relevance": "Why this object might be significant",
+      "location_in_frame": "Where in the photo this appears"
+    }}
+  ],
+  "potential_allegations_supported": [
+    {{
+      "description": "What allegation this visual evidence might support",
+      "visual_basis": "What in the photo supports this",
+      "confidence": "high|medium|low"
+    }}
+  ]
+}}
+
+RULES:
+1. Only extract what the visual analysis actually describes. Do not infer beyond the evidence.
+2. If faces are detected, note them but do NOT attempt to identify anyone.
+3. Focus on anomalies — these are the most evidentiary elements.
+4. Note any objects that could corroborate victim testimony.
+"""
+
+# Legacy visual analysis prompt (used in OCR pipeline)
 VISUAL_ANALYSIS_PROMPT = """Analyze this photograph from the Epstein case evidence files.
 Provide a forensic analysis including:
 
@@ -42,7 +145,7 @@ Provide a forensic analysis including:
 6. Estimated time period: Based on visual cues (furnishings, technology, etc.)
 
 Return ONLY valid JSON in this exact format:
-{
+{{
   "scene_description": "...",
   "objects_detected": ["object1", "object2", ...],
   "anomalies_noted": ["anomaly1", "anomaly2", ...],
@@ -51,4 +154,4 @@ Return ONLY valid JSON in this exact format:
   "estimated_period": "...",
   "evidence_relevance": "high|medium|low",
   "analysis_notes": "Additional context or observations"
-}"""
+}}"""

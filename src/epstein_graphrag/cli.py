@@ -91,7 +91,43 @@ def ocr(ctx: click.Context) -> None:
 @click.pass_context
 def extract(ctx: click.Context) -> None:
     """Extract entities from OCR output."""
-    console.print("[yellow]Entity extraction not yet implemented — see Task 5[/yellow]")
+    from epstein_graphrag.extract.entity_extractor import extract_batch
+
+    config = ctx.obj["config"]
+
+    # Check processed dir exists
+    if not config.processed_dir.exists():
+        console.print("[red]Error: No OCR output found. Run 'egr ocr' first.[/red]")
+        return
+
+    # Count OCR files
+    ocr_files = list(config.processed_dir.glob("*.json"))
+    ocr_files = [f for f in ocr_files if not f.name.endswith(".error.json")]
+    console.print(f"Found {len(ocr_files)} OCR results to process")
+
+    if len(ocr_files) == 0:
+        console.print("[yellow]No OCR results to process.[/yellow]")
+        return
+
+    # Run extraction
+    console.print("[cyan]Starting entity extraction...[/cyan]")
+    stats = extract_batch(
+        processed_dir=config.processed_dir,
+        extracted_dir=config.extracted_dir,
+        gemini_api_key=config.gemini_api_key,
+    )
+
+    console.print(f"\n[green]Extraction complete:[/green]")
+    console.print(f"  Total: {stats['total']}")
+    console.print(f"  Processed: {stats['processed']}")
+    console.print(f"  Skipped: {stats['skipped']}")
+    console.print(f"  Failed: {stats['failed']}")
+
+    if stats["failed"] > 0:
+        console.print(f"\n[yellow]Failed documents:[/yellow]")
+        for doc_id in stats["failed_docs"]:
+            console.print(f"  - {doc_id}")
+
 
 
 @main.command()
