@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Data (keep structure, ignore content)
+data/processed/*.json
+data/extracted/*.json
+!data/processed/.gitkeep
+!data/extracted/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db

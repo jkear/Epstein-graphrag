@@ -1,0 +1,1 @@
+"""OCR pipeline — Marker + Gemini."""
