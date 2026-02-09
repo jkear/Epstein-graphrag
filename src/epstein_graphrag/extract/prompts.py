@@ -32,21 +32,23 @@ Extract all persons, organizations, locations, events, allegations, and relation
 Return valid JSON only."""
 
 VISUAL_ANALYSIS_PROMPT = """Analyze this photograph from the Epstein case evidence files.
-Describe:
-1. Scene description (location type, setting, indoor/outdoor)
-2. People visible (number, apparent roles, any identifiable features)
-3. Objects of interest (documents, devices, furnishings)
-4. Any visible text (signs, labels, documents)
-5. Estimated time period based on visual cues
+Provide a forensic analysis including:
 
-Return JSON:
-{{
+1. Scene description: Describe the location, setting, indoor/outdoor, room type
+2. Objects detected: List all significant objects, furnishings, devices, documents visible
+3. Anomalies noted: Unusual features, security measures, modifications, or concerning elements
+4. Faces detected: Number and description of people visible (DO NOT attempt facial recognition)
+5. Visible text: Any readable text on signs, labels, documents
+6. Estimated time period: Based on visual cues (furnishings, technology, etc.)
+
+Return ONLY valid JSON in this exact format:
+{
   "scene_description": "...",
-  "people_count": 0,
-  "people_descriptions": ["..."],
-  "objects_detected": ["..."],
-  "visible_text": ["..."],
+  "objects_detected": ["object1", "object2", ...],
+  "anomalies_noted": ["anomaly1", "anomaly2", ...],
+  "faces_detected": [],
+  "visible_text": ["text1", "text2", ...],
   "estimated_period": "...",
   "evidence_relevance": "high|medium|low",
-  "notes": "..."
-}}"""
+  "analysis_notes": "Additional context or observations"
+}"""

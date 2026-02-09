@@ -1,8 +1,9 @@
 """Central configuration for the Epstein GraphRAG system."""
 
+import os
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Config(BaseModel):
@@ -20,11 +21,12 @@ class Config(BaseModel):
     alias_table_path: Path = Path("data/alias_table.json")
 
     # Neo4j
-    neo4j_uri: str = "bolt://localhost:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = "password"
+    neo4j_uri: str = Field(default=os.getenv("NEO4J_URI", "bolt://localhost:7687"))
+    neo4j_user: str = Field(default=os.getenv("NEO4J_USER", "neo4j"))
+    neo4j_password: str = Field(default=os.getenv("NEO4J_PASSWORD", "password"))
 
     # Gemini (free tier)
+    gemini_api_key: str = Field(default=os.getenv("GEMINI_API_KEY", ""))
     gemini_model: str = "gemini-2.0-flash"
 
     # Local LLM (Ollama)

@@ -52,8 +52,30 @@ def classify(ctx: click.Context, data_dir: str) -> None:
 @main.command()
 @click.pass_context
 def ocr(ctx: click.Context) -> None:
-    """Run OCR pipeline on classified text documents."""
-    console.print("[yellow]OCR pipeline not yet implemented — see Task 4[/yellow]")
+    """Run OCR pipeline on classified documents."""
+    import json
+    from pathlib import Path
+
+    from epstein_graphrag.ocr.marker_pipeline import process_batch
+
+    config = ctx.obj["config"]
+
+    # Load manifest
+    if not config.manifest_path.exists():
+        console.print("[red]Error: manifest.json not found. Run 'egr classify' first.[/red]")
+        return
+
+    manifest = json.loads(config.manifest_path.read_text())
+    console.print(f"Loaded manifest: {len(manifest)} documents")
+
+    # Run OCR pipeline
+    processed = process_batch(
+        manifest=manifest,
+        output_dir=config.processed_dir,
+        gemini_api_key=config.gemini_api_key,
+    )
+
+    console.print(f"[green]OCR complete: {len(processed)} documents processed[/green]")
 
 
 @main.command()
