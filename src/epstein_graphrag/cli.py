@@ -69,13 +69,22 @@ def ocr(ctx: click.Context) -> None:
     console.print(f"Loaded manifest: {len(manifest)} documents")
 
     # Run OCR pipeline
-    processed = process_batch(
+    stats = process_batch(
         manifest=manifest,
         output_dir=config.processed_dir,
         gemini_api_key=config.gemini_api_key,
     )
 
-    console.print(f"[green]OCR complete: {len(processed)} documents processed[/green]")
+    console.print(f"[green]OCR complete:[/green]")
+    console.print(f"  Total: {stats['total']}")
+    console.print(f"  Processed: {stats['processed']}")
+    console.print(f"  Skipped: {stats['skipped']}")
+    console.print(f"  Failed: {stats['failed']}")
+    
+    if stats['failed'] > 0:
+        console.print(f"\n[yellow]Failed documents:[/yellow]")
+        for doc_id in stats['failed_docs']:
+            console.print(f"  - {doc_id}")
 
 
 @main.command()

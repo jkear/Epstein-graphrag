@@ -256,7 +256,7 @@ def process_batch(
     output_dir: Path,
     gemini_api_key: str,
     resume: bool = True,
-) -> list[str]:
+) -> dict:
     """Process a batch of documents through OCR.
 
     Args:
@@ -266,9 +266,10 @@ def process_batch(
         resume: Skip documents that already have output files.
 
     Returns:
-        List of doc_ids that were successfully processed.
+        Dict with stats: total, processed, skipped, failed, failed_docs.
     """
     processed = []
+    skipped = []
     failed = []
 
     for doc_id, classification in tqdm(
@@ -276,6 +277,13 @@ def process_batch(
     ):
         pdf_path = Path(classification["file_path"])
         doc_type = classification["doc_type"]
+        
+        # Check if already processed (resume capability)
+        output_file = output_dir / f"{doc_id}.json"
+        if resume and output_file.exists():
+            logger.debug(f"Skipping {doc_id} (already processed)")
+            skipped.append(doc_id)
+            continue
 
         try:
             result = process_document(pdf_path, doc_type, output_dir, gemini_api_key)
@@ -291,7 +299,13 @@ def process_batch(
             )
 
     logger.info(
-        f"OCR batch complete: {len(processed)} processed, {len(failed)} failed"
+        f"OCR batch complete: {len(processed)} processed, {len(skipped)} skipped, {len(failed)} failed"
     )
 
-    return processed
+    return {
+        "total": len(manifest),
+        "processed": len(processed),
+        "skipped": len(skipped),
+        "failed": len(failed),
+        "failed_docs": failed,
+    }
