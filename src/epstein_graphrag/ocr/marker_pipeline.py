@@ -4,7 +4,7 @@ Two processing tracks:
   - TEXT: Marker + Gemini Flash 3 for high-quality OCR on scanned text documents
   - PHOTOGRAPH: Gemini Flash 3 vision for scene analysis, object detection, face detection
 
-Uses Gemini 2.0 Flash (gemini-2.0-flash) for both LLM-enhanced OCR and vision analysis.
+Uses Gemini 2.0 Flash (gemini-3-flash-preview) for both LLM-enhanced OCR and vision analysis.
 """
 
 import json
@@ -70,7 +70,7 @@ def process_text_document(
         config = {
             "use_llm": True,
             "gemini_api_key": gemini_api_key,
-            "gemini_model_name": "gemini-2.0-flash",
+            "gemini_model_name": "gemini-3-flash-preview",
             "force_ocr": force_ocr,
             "output_format": "markdown",
         }
@@ -106,7 +106,7 @@ def process_text_document(
             metadata={
                 "page_count": page_count,
                 "file_path": str(pdf_path),
-                "processing_engine": "marker+gemini-2.0-flash",
+                "processing_engine": "marker+gemini-3-flash-preview",
             },
         )
 
@@ -147,7 +147,7 @@ def process_photograph(
 
         # Run vision analysis
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3-flash-preview",
             contents=[VISUAL_ANALYSIS_PROMPT, uploaded_file],
         )
 
@@ -173,7 +173,7 @@ def process_photograph(
             metadata={
                 "page_count": 1,
                 "file_path": str(pdf_path),
-                "processing_engine": "gemini-2.0-flash-vision",
+                "processing_engine": "gemini-3-flash-preview-vision",
             },
             vision_analysis=vision_analysis,
         )
