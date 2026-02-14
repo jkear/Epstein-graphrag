@@ -23,6 +23,32 @@ logger = logging.getLogger(__name__)
 # Default LM Studio API endpoint
 DEFAULT_LM_STUDIO_BASE_URL = "http://localhost:1234/v1"
 
+# Cached auto-detected model ID
+_detected_model: str | None = None
+
+
+def _get_lmstudio_model(
+    model: str | None, base_url: str = DEFAULT_LM_STUDIO_BASE_URL
+) -> str:
+    """Resolve model name: use explicit value, or auto-detect from LM Studio."""
+    global _detected_model
+    if model is not None:
+        return model
+    if _detected_model is not None:
+        return _detected_model
+    try:
+        response = requests.get(f"{base_url}/models", timeout=5)
+        response.raise_for_status()
+        models = response.json().get("data", [])
+        if models:
+            _detected_model = models[0]["id"]
+            logger.info(f"Auto-detected LM Studio model: {_detected_model}")
+            return _detected_model
+    except Exception as e:
+        logger.warning(f"Could not auto-detect LM Studio model: {e}")
+    # Fallback
+    return "qwen/qwen3-vl-8b"
+
 
 def pdf_to_base64_images(pdf_path: Path, dpi: int = 300) -> list[str]:
     """
@@ -57,7 +83,7 @@ def pdf_to_base64_images(pdf_path: Path, dpi: int = 300) -> list[str]:
 
 def lmstudio_vision_ocr(
     base64_image: str,
-    model: str = "minicpm-v-2.6",
+    model: str | None = None,
     prompt: str | None = None,
     use_forensic_context: bool = True,
     document_type: str = "general",
@@ -71,7 +97,7 @@ def lmstudio_vision_ocr(
 
     Args:
         base64_image: Base64-encoded image data
-        model: Model name (default: minicpm-v-2.6)
+        model: Model name/ID (auto-detected from LM Studio if None)
         prompt: Custom prompt (overrides forensic context if provided)
         use_forensic_context: Whether to inject forensic analysis context (default: True)
         document_type: Type of document for specialized prompts
@@ -81,6 +107,7 @@ def lmstudio_vision_ocr(
     Returns:
         dict with 'text' (extracted text) and 'metadata' (model info)
     """
+    model = _get_lmstudio_model(model, base_url)
     if prompt is None and use_forensic_context:
         prompt = get_forensic_ocr_prompt(
             document_type=document_type,
@@ -135,7 +162,7 @@ Output only the extracted text without any additional commentary."""
 
 def extract_text_from_pdf(
     pdf_path: Path,
-    model: str = "minicpm-v-2.6",
+    model: str | None = None,
     dpi: int = 300,
     use_forensic_context: bool = True,
     document_type: str = "general",
@@ -200,7 +227,7 @@ def extract_text_from_pdf(
 
 def analyze_photograph(
     pdf_path: Path,
-    model: str = "minicpm-v-2.6",
+    model: str | None = None,
     use_forensic_context: bool = True,
     base_url: str = DEFAULT_LM_STUDIO_BASE_URL,
 ) -> tuple[str, dict]:
@@ -262,7 +289,7 @@ Be specific and factual. Focus on evidence visible in the image."""
 
 
 def check_lmstudio_available(
-    model: str = "minicpm-v-2.6", base_url: str = DEFAULT_LM_STUDIO_BASE_URL
+    model: str | None = None, base_url: str = DEFAULT_LM_STUDIO_BASE_URL
 ) -> bool:
     """
     Check if LM Studio is running and accessible.

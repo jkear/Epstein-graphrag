@@ -13,6 +13,8 @@ No API dependencies, no rate limits, no costs.
 
 import json
 import logging
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -25,7 +27,11 @@ from tqdm import tqdm
 from epstein_graphrag.ocr.duplicate_detector import DuplicateDetector
 from epstein_graphrag.ocr.lmstudio_ocr import (
     analyze_photograph as lmstudio_analyze_photograph,
+)
+from epstein_graphrag.ocr.lmstudio_ocr import (
     check_lmstudio_available,
+)
+from epstein_graphrag.ocr.lmstudio_ocr import (
     extract_text_from_pdf as lmstudio_extract_text_from_pdf,
 )
 from epstein_graphrag.ocr.ollama_ocr import (
@@ -37,6 +43,20 @@ from epstein_graphrag.ocr.redaction_merger import RedactionMerger
 
 # Type alias for OCR provider
 OCRProvider = Literal["ollama", "lmstudio"]
+
+# Force Surya/Marker to use CPU on Apple Silicon (MPS).
+# Surya 0.17.x has two MPS bugs:
+#   1. bfloat16 div with long scalars fails (div_true_dense_scalar_bfloat_long)
+#   2. Meta tensors use .to() instead of .to_empty(), crashing on MPS
+# CPU with float32 is reliable and fast enough on M-series chips.
+if not os.environ.get("TORCH_DEVICE"):
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            os.environ["TORCH_DEVICE"] = "cpu"
+    except ImportError:
+        pass
 
 # Make Marker imports optional (for Python 3.14 compatibility)
 try:
@@ -71,15 +91,20 @@ class OCRResult:
     vision_analysis: Optional[dict] = None
 
 
+# Lock for serializing Marker model inference (not thread-safe)
+_marker_lock = threading.Lock()
+
+
 def process_text_document(
     pdf_path: Path,
     force_ocr: bool = False,
     ocr_provider: OCRProvider = "ollama",
-    ocr_model: str = "minicpm-v:8b",
+    ocr_model: str | None = None,
     use_forensic_context: bool = True,
     document_type: str = "general",
     has_redactions: bool = False,
     lm_base_url: str = "http://localhost:1234/v1",
+    marker_models: dict | None = None,
 ) -> OCRResult:
     """Process a text document through Marker + Vision OCR fallback.
 
@@ -123,12 +148,15 @@ def process_text_document(
                 config_dict = config_parser.generate_config_dict()
                 config_dict["pdftext_workers"] = 1
 
-                model_list = create_model_dict()  # type: ignore[name-defined]
+                # Use pre-created models if available, otherwise create new ones
+                model_list = marker_models if marker_models is not None else create_model_dict()  # type: ignore[name-defined]
                 converter = PdfConverter(  # type: ignore[name-defined]
                     config=config_dict, artifact_dict=model_list, processor_list=[]
                 )
 
-                rendered = converter(str(pdf_path))
+                # Serialize Marker inference (models are not thread-safe)
+                with _marker_lock:
+                    rendered = converter(str(pdf_path))
                 marker_text = rendered.markdown
 
                 # Check if Marker extraction was successful
@@ -144,8 +172,7 @@ def process_text_document(
 
                 if confidence > 0.6:
                     logger.info(
-                        f"✓ Marker succeeded: {len(marker_text)} chars "
-                        f"(confidence: {confidence})"
+                        f"✓ Marker succeeded: {len(marker_text)} chars (confidence: {confidence})"
                     )
 
                     return OCRResult(
@@ -171,16 +198,8 @@ def process_text_document(
 
         # Use Vision OCR (Ollama or LM Studio) - fallback or forced
         if use_vision_ocr:
-            engine_reason = (
-                "forced"
-                if force_ocr
-                else "fallback"
-                if MARKER_AVAILABLE
-                else "primary"
-            )
-            logger.info(
-                f"Using {ocr_provider.upper()} OCR ({engine_reason}) for {doc_id}..."
-            )
+            engine_reason = "forced" if force_ocr else "fallback" if MARKER_AVAILABLE else "primary"
+            logger.info(f"Using {ocr_provider.upper()} OCR ({engine_reason}) for {doc_id}...")
 
             start_time = time.time()
 
@@ -236,7 +255,7 @@ def process_text_document(
 def process_photograph(
     pdf_path: Path,
     ocr_provider: OCRProvider = "ollama",
-    ocr_model: str = "minicpm-v:8b",
+    ocr_model: str | None = None,
     use_forensic_context: bool = True,
     lm_base_url: str = "http://localhost:1234/v1",
 ) -> OCRResult:
@@ -286,9 +305,7 @@ def process_photograph(
     metadata["processing_time_seconds"] = processing_time
     metadata["ocr_provider"] = ocr_provider
 
-    logger.info(
-        f"✓ Photograph analysis complete: {len(text)} chars in {processing_time:.1f}s"
-    )
+    logger.info(f"✓ Photograph analysis complete: {len(text)} chars in {processing_time:.1f}s")
 
     return OCRResult(
         doc_id=doc_id,
@@ -305,10 +322,11 @@ def process_document(
     pdf_path: Path,
     doc_type: str,
     ocr_provider: OCRProvider = "ollama",
-    ocr_model: str = "minicpm-v:8b",
+    ocr_model: str | None = None,
     use_forensic_context: bool = True,
     document_type: str = "general",
     lm_base_url: str = "http://localhost:1234/v1",
+    marker_models: dict | None = None,
 ) -> OCRResult:
     """Process a single document based on its classification.
 
@@ -333,6 +351,7 @@ def process_document(
             use_forensic_context=use_forensic_context,
             document_type=document_type,
             lm_base_url=lm_base_url,
+            marker_models=marker_models,
         )
     elif doc_type == "photograph":
         return process_photograph(
@@ -351,6 +370,7 @@ def process_document(
             use_forensic_context=use_forensic_context,
             document_type=document_type,
             lm_base_url=lm_base_url,
+            marker_models=marker_models,
         )
         photo_result = process_photograph(
             pdf_path,
@@ -375,7 +395,7 @@ def process_batch(
     output_dir: Path,
     resume: bool = True,
     ocr_provider: OCRProvider = "ollama",
-    ocr_model: str = "minicpm-v:8b",
+    ocr_model: str | None = None,
     use_forensic_context: bool = True,
     detect_duplicates: bool = False,
     merge_duplicates: bool = False,
@@ -408,10 +428,11 @@ def process_batch(
             raise RuntimeError(f"LM Studio not available at {lm_base_url}")
         logger.info(f"✓ LM Studio is available at {lm_base_url}")
     else:  # ollama
-        if not check_ollama_available(ocr_model):
-            logger.error(f"Ollama model '{ocr_model}' not available!")
-            logger.error("Please run: ollama pull minicpm-v:8b")
-            raise RuntimeError(f"Ollama model {ocr_model} not found")
+        ollama_model = ocr_model or "minicpm-v:8b"
+        if not check_ollama_available(ollama_model):
+            logger.error(f"Ollama model '{ollama_model}' not available!")
+            logger.error(f"Please run: ollama pull {ollama_model}")
+            raise RuntimeError(f"Ollama model {ollama_model} not found")
         logger.info(f"✓ Ollama model '{ocr_model}' is available")
 
     # Warn if using Ollama with num_workers > 1
@@ -461,6 +482,17 @@ def process_batch(
 
     total = len(manifest)
 
+    # Pre-create Marker models once (avoids per-document reload + MPS race conditions)
+    marker_models = None
+    if MARKER_AVAILABLE:
+        logger.info("Pre-loading Marker models (this may take a moment)...")
+        try:
+            marker_models = create_model_dict()  # type: ignore[name-defined]
+            logger.info("Marker models loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to pre-load Marker models: {e}")
+            logger.warning("Will fall back to Vision OCR for all documents")
+
     # Thread-safe counters for parallel processing
     counters = {"processed": 0, "skipped": 0, "failed": 0}
     failed_docs_lock = []
@@ -505,6 +537,7 @@ def process_batch(
                 use_forensic_context=use_forensic_context,
                 document_type=forensic_doc_type,
                 lm_base_url=lm_base_url,
+                marker_models=marker_models,
             )
 
             # Save result

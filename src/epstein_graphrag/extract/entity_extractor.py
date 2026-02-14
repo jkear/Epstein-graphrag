@@ -5,7 +5,7 @@ using Gemini 3 Flash (gemini-3-flash-preview) via the Google Gen AI SDK.
 """
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from google import genai
@@ -13,8 +13,8 @@ from google.genai import types
 from tqdm import tqdm
 
 from epstein_graphrag.extract.prompts import (
-    TEXT_ENTITY_EXTRACTION_PROMPT,
     PHOTO_ENTITY_EXTRACTION_PROMPT,
+    TEXT_ENTITY_EXTRACTION_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,20 @@ def extract_from_text(
         )
 
         raw_response = response.text
+        if raw_response is None:
+            raise ValueError("API returned None response")
+
         parsed = json.loads(raw_response)
 
         # Validate structure
-        expected_keys = {"people", "locations", "organizations", "events", "allegations", "associations"}
+        expected_keys = {
+            "people",
+            "locations",
+            "organizations",
+            "events",
+            "allegations",
+            "associations",
+        }
         missing_keys = expected_keys - set(parsed.keys())
         if missing_keys:
             logger.warning(f"{doc_id}: Missing keys in response: {missing_keys}")
@@ -159,6 +169,9 @@ def extract_from_photo(
         )
 
         raw_response = response.text
+        if raw_response is None:
+            raise ValueError("API returned None response")
+
         parsed = json.loads(raw_response)
 
         return ExtractionResult(

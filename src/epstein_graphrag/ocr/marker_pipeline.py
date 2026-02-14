@@ -1,29 +1,75 @@
-"""Marker + Gemini OCR pipeline for scanned PDF documents.
+"""Marker + Ollama Vision OCR pipeline for scanned PDF documents.
 
 Two processing tracks:
-  - TEXT: Marker + Gemini Flash 3 for high-quality OCR on scanned text documents
-  - PHOTOGRAPH: Gemini Flash 3 vision for scene analysis, object detection, face detection
+  - TEXT: Marker for layout extraction + Ollama vision (MiniCPM-V) for scanned content
+  - PHOTOGRAPH: Ollama vision (MiniCPM-V) for scene analysis and object detection
 
-Uses Gemini 2.0 Flash (gemini-3-flash-preview) for both LLM-enhanced OCR and vision analysis.
+Uses MiniCPM-V via Ollama for local inference.
+No API dependencies, no rate limits, no costs.
 """
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from google import genai
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from PIL import Image
 from tqdm import tqdm
 
-from epstein_graphrag.extract.prompts import VISUAL_ANALYSIS_PROMPT
+from epstein_graphrag.ocr.deepseek_ocr import (
+    analyze_photograph as ds_analyze_photograph,
+)
+from epstein_graphrag.ocr.deepseek_ocr import (
+    extract_text_from_pdf as ds_extract_text_from_pdf,
+)
+from epstein_graphrag.ocr.deepseek_ocr import (
+    load_deepseek_model,
+)
+
+# Force Surya/Marker to use CPU on Apple Silicon (MPS).
+# Surya 0.17.x has MPS bugs with bfloat16 and meta tensors.
+if not os.environ.get("TORCH_DEVICE"):
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            os.environ["TORCH_DEVICE"] = "cpu"
+    except ImportError:
+        pass
+
+# Make Marker imports optional (for Python 3.14 compatibility)
+try:
+    from marker.config.parser import ConfigParser
+    from marker.converters.pdf import PdfConverter
+    from marker.models import create_model_dict
+
+    MARKER_AVAILABLE = True
+except ImportError as e:
+    MARKER_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Marker not available (Python 3.14 compatibility issue): {e}")
 
 logger = logging.getLogger(__name__)
+
+
+# Model cache for DeepSeek
+_deepseek_model_cache = None
+
+
+def get_or_load_deepseek_model():
+    """Load or return cached DeepSeek model.
+
+    Returns:
+        Tuple of (model, processor).
+    """
+    global _deepseek_model_cache
+
+    if _deepseek_model_cache is None:
+        _deepseek_model_cache = load_deepseek_model()
+
+    return _deepseek_model_cache
 
 
 class ProcessingTrack(str, Enum):
@@ -48,71 +94,108 @@ class OCRResult:
 
 def process_text_document(
     pdf_path: Path,
-    gemini_api_key: str,
-    force_ocr: bool = True,
+    gemini_api_key: str = "",
+    force_ocr: bool = False,
 ) -> OCRResult:
-    """Process a text document through Marker + Gemini Flash 3 LLM-assisted OCR.
+    """Process a text document through Marker + DeepSeek-OCR fallback.
 
-    Uses Marker with Gemini 2.0 Flash for enhanced OCR quality on degraded scans.
+    Strategy:
+    1. Try Marker first for native PDF text extraction (fast, preserves layout)
+    2. If Marker fails or confidence is low, fall back to DeepSeek-OCR-MLX
+    3. If Marker not available (Python 3.14), use DeepSeek-OCR directly
 
     Args:
         pdf_path: Path to the PDF file.
-        gemini_api_key: Gemini API key for LLM integration.
-        force_ocr: Force OCR even on digital PDFs.
+        force_ocr: Force DeepSeek-OCR even if Marker succeeds.
 
     Returns:
         OCRResult with extracted text and metadata.
     """
     doc_id = pdf_path.stem
+    use_deepseek = force_ocr or not MARKER_AVAILABLE
 
     try:
-        # Create Marker configuration with Gemini LLM integration
-        # Note: Use environment variable or pass directly
-        import os
-        os.environ["GOOGLE_API_KEY"] = gemini_api_key
-        
-        config = {
-            "use_llm": True,
-            "gemini_api_key": gemini_api_key,
-            "gemini_model_name": "gemini-3-flash-preview",
-            "force_ocr": force_ocr,
-            "output_format": "markdown",
-        }
+        # Try Marker first (fast for native PDFs) - only if available
+        if MARKER_AVAILABLE and not force_ocr:
+            try:
+                config = {
+                    "force_ocr": False,
+                    "output_format": "markdown",
+                }
 
-        config_parser = ConfigParser(config)
-        models = create_model_dict()
+                config_parser = ConfigParser(config)
+                models = create_model_dict()
 
-        converter = PdfConverter(
-            config=config_parser.generate_config_dict(),
-            artifact_dict=models,
-            processor_list=config_parser.get_processors(),
-            renderer=config_parser.get_renderer(),
-            llm_service=config_parser.get_llm_service(),
-        )
+                converter = PdfConverter(
+                    config=config_parser.generate_config_dict(),
+                    artifact_dict=models,
+                    processor_list=config_parser.get_processors(),
+                    renderer=config_parser.get_renderer(),
+                )
 
-        # Run OCR
-        rendered = converter(str(pdf_path))
-        text = rendered.markdown if hasattr(rendered, "markdown") else str(rendered)
+                # Run Marker
+                rendered = converter(str(pdf_path))
+                text = rendered.markdown if hasattr(rendered, "markdown") else str(rendered)
 
-        # Extract metadata
-        page_count = len(rendered.pages) if hasattr(rendered, "pages") else 1
-        confidence = (
-            rendered.metadata.get("confidence", 0.85)
-            if hasattr(rendered, "metadata")
-            else 0.85
-        )
+                # Check if Marker succeeded
+                page_count = len(rendered.pages) if hasattr(rendered, "pages") else 1
+                confidence = (
+                    rendered.metadata.get("confidence", 0.85)
+                    if hasattr(rendered, "metadata")
+                    else 0.85
+                )
 
-        return OCRResult(
-            doc_id=doc_id,
-            track=ProcessingTrack.TEXT,
-            text=text,
-            confidence=confidence,
-            metadata={
-                "page_count": page_count,
-                "file_path": str(pdf_path),
-                "processing_engine": "marker+gemini-3-flash-preview",
-            },
-        )
+                # If Marker got good text, use it
+                if text and len(text.strip()) > 100 and confidence > 0.6:
+                    logger.debug(f"{doc_id}: Marker succeeded (confidence={confidence:.2f})")
+                    return OCRResult(
+                        doc_id=doc_id,
+                        track=ProcessingTrack.TEXT,
+                        text=text,
+                        confidence=confidence,
+                        metadata={
+                            "page_count": page_count,
+                            "file_path": str(pdf_path),
+                            "processing_engine": "marker",
+                        },
+                    )
+                else:
+                    logger.debug(
+                        f"{doc_id}: Marker confidence low or insufficient text, "
+                        "falling back to DeepSeek-OCR"
+                    )
+                    use_deepseek = True
+
+            except Exception as e:
+                logger.debug(f"{doc_id}: Marker failed ({e}), falling back to DeepSeek-OCR")
+                use_deepseek = True
+
+        # Fall back to DeepSeek-OCR for scanned documents or when Marker unavailable
+        if use_deepseek:
+            if not MARKER_AVAILABLE:
+                logger.debug(f"{doc_id}: Using DeepSeek-OCR (Marker not available)")
+            else:
+                logger.debug(f"{doc_id}: Using DeepSeek-OCR")
+
+            model, processor = get_or_load_deepseek_model()
+
+            text, metadata = ds_extract_text_from_pdf(
+                pdf_path,
+                model=model,
+                processor=processor,
+            )
+
+            return OCRResult(
+                doc_id=doc_id,
+                track=ProcessingTrack.TEXT,
+                text=text,
+                confidence=0.9,  # DeepSeek-OCR is high quality
+                metadata={
+                    **metadata,
+                    "file_path": str(pdf_path),
+                    "processing_engine": "deepseek-ocr-mlx-8bit",
+                },
+            )
 
     except Exception as e:
         logger.error(f"Failed to process text document {doc_id}: {e}")
@@ -127,57 +210,45 @@ def process_text_document(
 
 def process_photograph(
     pdf_path: Path,
-    gemini_api_key: str,
 ) -> OCRResult:
-    """Process a photograph through Gemini Flash 3 vision analysis.
+    """Process a photograph through DeepSeek-OCR-MLX vision analysis.
 
-    Uses Gemini 2.0 Flash for scene description, object detection, anomaly identification.
+    Uses DeepSeek-OCR for scene description, object detection, and text extraction.
 
     Args:
         pdf_path: Path to the PDF file (single-page photograph).
-        gemini_api_key: Gemini API key for vision analysis.
 
     Returns:
-        OCRResult with vision analysis in the vision_analysis field.
+        OCRResult with vision analysis text and metadata.
     """
     doc_id = pdf_path.stem
 
     try:
-        # Initialize Gemini client
-        client = genai.Client(api_key=gemini_api_key)
+        # Load model
+        model, processor = get_or_load_deepseek_model()
 
-        # Upload the PDF for analysis
-        uploaded_file = client.files.upload(file=pdf_path)
-
-        # Run vision analysis
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=[VISUAL_ANALYSIS_PROMPT, uploaded_file],
+        # Analyze photograph using DeepSeek
+        analysis_text, metadata = ds_analyze_photograph(
+            pdf_path,
+            model=model,
+            processor=processor,
         )
 
-        vision_text = response.text
-
-        # Parse structured response (expecting JSON format from prompt)
-        try:
-            vision_analysis = json.loads(vision_text)
-        except json.JSONDecodeError:
-            # Fallback if model doesn't return JSON
-            vision_analysis = {
-                "scene_description": vision_text,
-                "objects_detected": [],
-                "anomalies_noted": [],
-                "faces_detected": [],
-            }
+        # Parse as structured vision analysis (if formatted correctly)
+        vision_analysis = {
+            "raw_analysis": analysis_text,
+            "model": "deepseek-ocr-mlx-8bit",
+        }
 
         return OCRResult(
             doc_id=doc_id,
             track=ProcessingTrack.PHOTOGRAPH,
-            text="",
+            text=analysis_text,  # Store analysis as text
             confidence=0.9,
             metadata={
-                "page_count": 1,
+                **metadata,
                 "file_path": str(pdf_path),
-                "processing_engine": "gemini-3-flash-preview-vision",
+                "processing_engine": "deepseek-ocr-mlx-8bit-vision",
             },
             vision_analysis=vision_analysis,
         )
@@ -190,7 +261,6 @@ def process_photograph(
             text="",
             confidence=0.0,
             metadata={"error": str(e), "file_path": str(pdf_path)},
-            vision_analysis=None,
         )
 
 
@@ -198,7 +268,7 @@ def process_document(
     pdf_path: Path,
     doc_type: str,
     output_dir: Path,
-    gemini_api_key: str,
+    gemini_api_key: str = "",
 ) -> OCRResult | None:
     """Process a single PDF through the appropriate OCR track.
 
@@ -206,7 +276,6 @@ def process_document(
         pdf_path: Path to the PDF file.
         doc_type: Classification type from manifest ('text_document', 'photograph', 'mixed').
         output_dir: Directory to write the OCR output JSON.
-        gemini_api_key: Gemini API key.
 
     Returns:
         OCRResult, or None if processing failed.
@@ -221,13 +290,13 @@ def process_document(
 
     # Route to appropriate processing track
     if doc_type == "text_document":
-        result = process_text_document(pdf_path, gemini_api_key)
+        result = process_text_document(pdf_path)
     elif doc_type == "photograph":
-        result = process_photograph(pdf_path, gemini_api_key)
+        result = process_photograph(pdf_path)
     elif doc_type == "mixed":
         # Mixed documents get both OCR and vision analysis
-        text_result = process_text_document(pdf_path, gemini_api_key)
-        photo_result = process_photograph(pdf_path, gemini_api_key)
+        text_result = process_text_document(pdf_path)
+        photo_result = process_photograph(pdf_path)
         result = OCRResult(
             doc_id=doc_id,
             track=ProcessingTrack.MIXED,
@@ -254,7 +323,7 @@ def process_document(
 def process_batch(
     manifest: dict,
     output_dir: Path,
-    gemini_api_key: str,
+    gemini_api_key: str = "",
     resume: bool = True,
 ) -> dict:
     """Process a batch of documents through OCR.
@@ -262,7 +331,6 @@ def process_batch(
     Args:
         manifest: Classification manifest (doc_id -> classification result dict).
         output_dir: Directory to write OCR output JSONs.
-        gemini_api_key: Gemini API key.
         resume: Skip documents that already have output files.
 
     Returns:
@@ -272,12 +340,14 @@ def process_batch(
     skipped = []
     failed = []
 
-    for doc_id, classification in tqdm(
-        manifest.items(), desc="Processing OCR pipeline"
-    ):
+    # Pre-load DeepSeek model once for entire batch
+    logger.info("Pre-loading DeepSeek-OCR model for batch processing...")
+    get_or_load_deepseek_model()
+
+    for doc_id, classification in tqdm(manifest.items(), desc="Processing OCR pipeline"):
         pdf_path = Path(classification["file_path"])
         doc_type = classification["doc_type"]
-        
+
         # Check if already processed (resume capability)
         output_file = output_dir / f"{doc_id}.json"
         if resume and output_file.exists():
@@ -286,7 +356,12 @@ def process_batch(
             continue
 
         try:
-            result = process_document(pdf_path, doc_type, output_dir, gemini_api_key)
+            result = process_document(
+                pdf_path,
+                doc_type,
+                output_dir,
+                gemini_api_key=gemini_api_key,
+            )
             if result:
                 processed.append(doc_id)
         except Exception as e:
@@ -294,12 +369,11 @@ def process_batch(
             failed.append(doc_id)
             # Write error file for retry
             error_path = output_dir / f"{doc_id}.error.json"
-            error_path.write_text(
-                json.dumps({"doc_id": doc_id, "error": str(e)}, indent=2)
-            )
+            error_path.write_text(json.dumps({"doc_id": doc_id, "error": str(e)}, indent=2))
 
     logger.info(
-        f"OCR batch complete: {len(processed)} processed, {len(skipped)} skipped, {len(failed)} failed"
+        f"OCR batch complete: {len(processed)} processed, "
+        f"{len(skipped)} skipped, {len(failed)} failed"
     )
 
     return {

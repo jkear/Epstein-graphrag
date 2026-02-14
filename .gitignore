@@ -19,12 +19,28 @@ venv/
 
 # Environment
 .env
+docs/
 
 # Data (keep structure, ignore content)
 data/processed/*.json
 data/extracted/*.json
 !data/processed/.gitkeep
 !data/extracted/.gitkeep
+data/processed_failed_backup/*
+data/processed_gemini_backup/*
+
+# Data artifacts (generated output, not source)
+data/comparison/
+data/processed-backup.zip
+data/processed_failed_backup/
+data/processed_gemini_backup/
+
+# One-off scripts and logs
+*.log
+compare_extractors.py
+check_progress.sh
+monitor_ocr.sh
+ocr_batch.log
 
 # OS
 .DS_Store

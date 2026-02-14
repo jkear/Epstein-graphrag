@@ -68,6 +68,12 @@ def classify(ctx: click.Context, data_dir: str) -> None:
     help="LM Studio base URL (default: http://localhost:1234/v1)",
 )
 @click.option(
+    "--ocr-model",
+    type=str,
+    default=None,
+    help="Vision model name/ID (default: minicpm-v:8b for Ollama, auto-detect for LM Studio)",
+)
+@click.option(
     "--num-workers",
     "-w",
     type=int,
@@ -75,7 +81,7 @@ def classify(ctx: click.Context, data_dir: str) -> None:
     help="Number of parallel workers (default: 1, sequential processing)",
 )
 @click.pass_context
-def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url: str, num_workers: int) -> None:
+def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url: str, ocr_model: str | None, num_workers: int) -> None:
     """Run OCR pipeline on classified documents."""
     import json
     from pathlib import Path
@@ -103,11 +109,15 @@ def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url
     console.print(f"Loaded manifest: {len(manifest_data)} documents")
 
     # Run OCR pipeline with selected provider
+    # Default model per provider if not specified
+    if ocr_model is None:
+        ocr_model = "minicpm-v:8b" if ocr_provider == "ollama" else None
+
     stats = process_batch(
         manifest=manifest_data,
         output_dir=config.processed_dir,
         ocr_provider=ocr_provider,
-        ocr_model="minicpm-v:8b" if ocr_provider == "ollama" else None,
+        ocr_model=ocr_model,
         lm_base_url=lm_base_url,
         num_workers=num_workers,
     )

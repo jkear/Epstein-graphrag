@@ -7,7 +7,6 @@ to the same canonical name.
 
 import json
 import logging
-from pathlib import Path
 
 from epstein_graphrag.config import Config
 

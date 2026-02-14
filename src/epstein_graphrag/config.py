@@ -29,13 +29,22 @@ class Config(BaseModel):
     neo4j_user: str = Field(default=os.getenv("NEO4J_USER", "neo4j"))
     neo4j_password: str = Field(default=os.getenv("NEO4J_PASSWORD", "password"))
 
-    # Gemini (free tier)
+    # API Keys for multi-provider extraction
     gemini_api_key: str = Field(default=os.getenv("GEMINI_API_KEY", ""))
+    deepseek_api_key: str = Field(default=os.getenv("DEEPSEEK_API_KEY", ""))
+
+    # Model configurations
     gemini_model: str = "gemini-2.5-flash"  # More stable than gemini-3-flash-preview
 
-    # Local LLM (Ollama)
-    local_llm_model: str = "mlx-community/Mistral-7B-Instruct-v0.3"
-    local_llm_host: str = "http://localhost:11434"
+    # LM Studio (MLX backend on Apple Silicon)
+    lmstudio_base_url: str = Field(
+        default=os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+    )
+    lmstudio_model: str = Field(
+        default=os.getenv("LMSTUDIO_MODEL", "qwen/qwen3-vl-8b")
+    )
+    lmstudio_temperature: float = 0.3
+    lmstudio_max_tokens: int = 2000
 
     # Embeddings
     embedding_model: str = "nomic-embed-text"
