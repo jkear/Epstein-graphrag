@@ -2,6 +2,10 @@
 
 A system for extracting structured knowledge from the Epstein files using graphRAG.
 
+## Source Files
+
+Download the Epstein evidence PDFs from: https://github.com/yung-megafone/Epstein-Files
+
 ## Overview
 
 This system processes PDF documents through a multi-stage pipeline:
@@ -155,8 +159,6 @@ Generate 768d vectors using `nomic-embed-text` for semantic search.
 epstein-graphrag/
 ├── data/
 │   ├── manifest.json           # Document classification manifest
-│   ├── manifest_batch.json     # Batch-specific manifest
-│   ├── manifest_test.json      # Test manifest
 │   ├── alias_table.json        # Name resolution mappings
 │   ├── schema_alerts.jsonl     # Schema validation alerts
 │   ├── processed/              # OCR output JSON files
