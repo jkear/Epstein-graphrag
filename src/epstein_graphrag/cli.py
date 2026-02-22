@@ -80,10 +80,16 @@ def classify(ctx: click.Context, data_dir: str, num_workers: int | None) -> None
     help="LM Studio base URL (default: http://localhost:1234/v1)",
 )
 @click.option(
+    "--vllm-url",
+    type=str,
+    default="http://localhost:8000/v1",
+    help="vLLM server URL (default: http://localhost:8000/v1)",
+)
+@click.option(
     "--ocr-model",
     type=str,
     default=None,
-    help="Vision model name/ID (default: minicpm-v:8b for Ollama, auto-detect for LM Studio)",
+    help="Vision model (default: minicpm-v:8b for Ollama, Qwen2-VL-7B for vLLM)",
 )
 @click.option(
     "--num-workers",
@@ -93,7 +99,7 @@ def classify(ctx: click.Context, data_dir: str, num_workers: int | None) -> None
     help="Number of parallel workers (default: 1, sequential processing)",
 )
 @click.pass_context
-def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url: str, ocr_model: str | None, num_workers: int) -> None:
+def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url: str, vllm_url: str, ocr_model: str | None, num_workers: int) -> None:
     """Run OCR pipeline on classified documents."""
     import json
     from pathlib import Path
@@ -109,8 +115,11 @@ def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url
     console.print(f"[cyan]OCR provider: {ocr_provider}[/cyan]")
     if ocr_provider == "lmstudio":
         console.print(f"[cyan]LM Studio URL: {lm_base_url}[/cyan]")
-        if num_workers > 1:
-            console.print("[yellow]Note: LM Studio supports concurrent processing (--num-workers {num_workers})[/yellow]")
+    elif ocr_provider == "vllm":
+        console.print(f"[cyan]vLLM URL: {vllm_url}[/cyan]")
+    
+    if num_workers > 1:
+        console.print(f"[cyan]Workers: {num_workers}[/cyan]")
 
     # Load manifest
     if not manifest_path.exists():
@@ -118,19 +127,31 @@ def ocr(ctx: click.Context, manifest: str | None, ocr_provider: str, lm_base_url
         return
 
     manifest_data = json.loads(manifest_path.read_text())
-    console.print(f"Loaded manifest: {len(manifest_data)} documents")
+    
+    # Handle both formats: dict of docs or {"documents": [...]}
+    if isinstance(manifest_data, dict) and "documents" in manifest_data:
+        docs = manifest_data["documents"]
+        console.print(f"Loaded manifest: {len(docs)} documents")
+    else:
+        docs = manifest_data
+        console.print(f"Loaded manifest: {len(docs)} documents")
 
-    # Run OCR pipeline with selected provider
     # Default model per provider if not specified
     if ocr_model is None:
-        ocr_model = "minicpm-v:8b" if ocr_provider == "ollama" else None
+        if ocr_provider == "ollama":
+            ocr_model = "minicpm-v:8b"
+        elif ocr_provider == "vllm":
+            ocr_model = "Qwen/Qwen2-VL-7B-Instruct"
+
+    # Select base URL based on provider
+    base_url = vllm_url if ocr_provider == "vllm" else lm_base_url
 
     stats = process_batch(
         manifest=manifest_data,
         output_dir=config.processed_dir,
         ocr_provider=ocr_provider,
         ocr_model=ocr_model,
-        lm_base_url=lm_base_url,
+        lm_base_url=base_url,
         num_workers=num_workers,
     )
 

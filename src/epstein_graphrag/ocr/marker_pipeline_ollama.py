@@ -40,9 +40,13 @@ from epstein_graphrag.ocr.ollama_ocr import (
     extract_text_from_pdf,
 )
 from epstein_graphrag.ocr.redaction_merger import RedactionMerger
+from epstein_graphrag.ocr.vllm_ocr import (
+    extract_text_from_pdf_vllm,
+    check_vllm_available,
+)
 
 # Type alias for OCR provider
-OCRProvider = Literal["ollama", "lmstudio"]
+OCRProvider = Literal["ollama", "lmstudio", "vllm"]
 
 # Force Surya/Marker to use CPU on Apple Silicon (MPS).
 # Surya 0.17.x has two MPS bugs:
@@ -204,7 +208,15 @@ def process_text_document(
             start_time = time.time()
 
             # Select OCR provider
-            if ocr_provider == "lmstudio":
+            if ocr_provider == "vllm":
+                text, metadata = extract_text_from_pdf_vllm(
+                    pdf_path,
+                    model=ocr_model or "Qwen/Qwen2-VL-7B-Instruct",
+                    document_type=document_type,
+                    has_redactions=has_redactions,
+                    base_url=lm_base_url,
+                )
+            elif ocr_provider == "lmstudio":
                 text, metadata = lmstudio_extract_text_from_pdf(
                     pdf_path,
                     model=ocr_model,
@@ -285,7 +297,15 @@ def process_photograph(
     start_time = time.time()
 
     # Select OCR provider
-    if ocr_provider == "lmstudio":
+    if ocr_provider == "vllm":
+        # vLLM uses same function for text and photographs
+        text, metadata = extract_text_from_pdf_vllm(
+            pdf_path,
+            model=ocr_model or "Qwen/Qwen2-VL-7B-Instruct",
+            document_type="photograph",
+            base_url=lm_base_url,
+        )
+    elif ocr_provider == "lmstudio":
         text, metadata = lmstudio_analyze_photograph(
             pdf_path,
             model=ocr_model,
@@ -422,7 +442,13 @@ def process_batch(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Check OCR provider availability
-    if ocr_provider == "lmstudio":
+    if ocr_provider == "vllm":
+        if not check_vllm_available(base_url=lm_base_url):
+            logger.error(f"vLLM not available at {lm_base_url}!")
+            logger.error("Start vLLM with: python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2-VL-7B-Instruct --port 8000")
+            raise RuntimeError(f"vLLM not available at {lm_base_url}")
+        logger.info(f"✓ vLLM is available at {lm_base_url}")
+    elif ocr_provider == "lmstudio":
         if not check_lmstudio_available(model=ocr_model, base_url=lm_base_url):
             logger.error(f"LM Studio not available at {lm_base_url}!")
             raise RuntimeError(f"LM Studio not available at {lm_base_url}")
@@ -440,7 +466,7 @@ def process_batch(
         logger.warning(
             f"Ollama does not support concurrent processing well. "
             f"Using num_workers={num_workers} may cause issues. "
-            f"Consider using --ocr-provider lmstudio for better concurrency."
+            f"Consider using --ocr-provider vllm or lmstudio for better concurrency."
         )
 
     logger.info(f"Marker available: {MARKER_AVAILABLE}")
