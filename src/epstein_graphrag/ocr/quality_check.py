@@ -29,6 +29,96 @@ class QualityReport:
     repetition_ratio: float
 
 
+def clean_repetition_loops(text: str, max_repeats: int = 3) -> tuple[str, int]:
+    """Remove repeated lines and sentences from LLM output.
+
+    Vision models sometimes get stuck in a generation loop, repeating the
+    same content dozens of times.  Two patterns are detected:
+
+    1. **Line-level**: Same line repeated on consecutive lines.
+    2. **Sentence-level**: Same sentence repeated within a single long line
+       (e.g. a 16K-char line that is two sentences repeated 100 times).
+
+    Both are collapsed to at most ``max_repeats`` occurrences.
+
+    Args:
+        text: Raw OCR/LLM output text.
+        max_repeats: Keep at most this many copies of any repeated unit.
+
+    Returns:
+        Tuple of (cleaned_text, number_of_repetitions_removed).
+    """
+    removed = 0
+
+    # --- Pass 1: Global line-level deduplication ---
+    # Catches both consecutive ("A A A A") and alternating ("A B A B A B") patterns.
+    # Any line appearing > max_repeats times total is capped.
+    lines = text.split("\n")
+    line_counts: Counter[str] = Counter()
+    cleaned_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip very short lines from duplicate detection (bullets, blank lines)
+        if len(stripped) < 20:
+            cleaned_lines.append(line)
+            continue
+
+        line_counts[stripped] += 1
+        if line_counts[stripped] <= max_repeats:
+            cleaned_lines.append(line)
+        else:
+            removed += 1
+
+    text = "\n".join(cleaned_lines)
+
+    # --- Pass 2: Sentence-level deduplication within long lines ---
+    # Catches: "Sentence A. Sentence B. Sentence A. Sentence B. ..." on one line
+    import re
+
+    final_lines: list[str] = []
+    for line in text.split("\n"):
+        if len(line) < 500:
+            final_lines.append(line)
+            continue
+
+        # Split into sentences
+        sentences = re.split(r"(?<=[.!?])\s+", line)
+        if len(sentences) < 6:
+            final_lines.append(line)
+            continue
+
+        # Count sentence occurrences
+        counts = Counter(s.strip() for s in sentences if len(s.strip()) > 20)
+        if not counts:
+            final_lines.append(line)
+            continue
+
+        most_common_count = counts.most_common(1)[0][1]
+        if most_common_count <= max_repeats:
+            final_lines.append(line)
+            continue
+
+        # Deduplicate: keep max_repeats of each sentence
+        seen: Counter[str] = Counter()
+        kept: list[str] = []
+        for s in sentences:
+            key = s.strip()
+            if len(key) <= 20:
+                kept.append(s)
+                continue
+            seen[key] += 1
+            if seen[key] <= max_repeats:
+                kept.append(s)
+            else:
+                removed += 1
+
+        final_lines.append(" ".join(kept))
+
+    return "\n".join(final_lines), removed
+
+
 def detect_repetition(text: str, window_size: int = 10) -> float:
     """Detect repeating patterns in text.
 

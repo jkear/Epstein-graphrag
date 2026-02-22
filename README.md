@@ -1,6 +1,17 @@
 # Epstein Evidence GraphRAG
 
-A system for extracting structured knowledge from the Epstein files using graphRAG.
+A system for extracting structured knowledge from the Epstein files using GraphRAG.
+
+## Current Status
+
+| Metric | Value |
+|--------|-------|
+| **Total Documents** | 849,503 |
+| **Total Pages** | 1,506,429 |
+| **Text Extracted (no OCR needed)** | 756,340 (89%) |
+| **Needs VLM OCR** | 93,163 (11%) |
+
+**89% of documents have embedded text** - the classifier extracts this automatically. Only 11% need vision model OCR.
 
 ## Source Files
 
@@ -10,8 +21,8 @@ Download the Epstein evidence PDFs from: https://github.com/yung-megafone/Epstei
 
 This system processes PDF documents through a multi-stage pipeline:
 
-1. **Classification** - Categorize documents by type (photograph, bank statement, legal document, etc.)
-2. **OCR** - Extract text using vision models (MiniCPM-V via Ollama)
+1. **Classification** - Categorize documents and **extract text from digital PDFs** (skips OCR for 89% of files!)
+2. **OCR** - Extract text from scanned documents using vision models (vLLM, LM Studio, or Ollama)
 3. **Entity Extraction** - Extract structured entities using multi-provider LLM strategy
 4. **Graph Ingestion** - Load entities into Neo4j with relationship mapping
 5. **Embeddings** - Generate vector embeddings for semantic search
@@ -20,40 +31,59 @@ This system processes PDF documents through a multi-stage pipeline:
 ### Prerequisites
 
 - Python 3.11+
-- LMStuidio CLI running `qwen3-VL-8b` for concurrency or
-- Ollama running with `minicpm-v:8b` and `nomic-embed-text` models
-- Neo4j (for graph storage)
+- One of:
+  - **vLLM** (fastest - 5-10x faster than Ollama) with Qwen2-VL-7B
+  - LM Studio with Qwen3-VL-8B-MLX (for Mac)
+  - Ollama with minicpm-v:8b
+- Neo4j 5+ (for graph storage)
 - Optional: Gemini API key, DeepSeek API key
+
+### Hardware Requirements
+
+| Hardware | OCR Speed | Notes |
+|----------|-----------|-------|
+| RTX 3060+ (12GB VRAM) | ~100-200 pages/min | vLLM recommended |
+| M1/M2/M3/M4 Mac (16GB+) | ~50-100 pages/min | vLLM-MLX or LM Studio |
+| Cloud GPU (T4/A100) | ~150-300 pages/min | Vast.ai ~$0.02-0.05/hr |
 
 ### Setup
 
 ```bash
-cd /epstein-graphrag
+cd epstein-graphrag
 uv venv
 source .venv/bin/activate
 uv sync
 ```
 
-### Get LMStuido or Ollama Models
+### OCR Backend Setup
 
-Options 1, 2, or 3 + an embedding model:
-
-```powershell
-lms pull lmstudio-community/Qwen3-VL-8B-GGUF
-lms server start Qwen3-VL-8B-GGUF
+**Option 1: vLLM (Recommended - Fastest)**
+```bash
+pip install vllm
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2-VL-7B-Instruct \
+    --trust-remote-code \
+    --gpu-memory-utilization 0.90 \
+    --port 8000
 ```
 
+**Option 2: vLLM-MLX (Mac Apple Silicon)**
+```bash
+pip install vllm-mlx
+vllm-mlx serve mlx-community/Qwen2-VL-7B-Instruct-4bit --port 8001
+```
+
+**Option 3: LM Studio (Mac GUI)**
 ```bash
 lms pull lmstudio-community/Qwen3-VL-8B-MLX
 lms server start lmstudio-community/Qwen3-VL-8B-MLX
 ```
 
+**Option 4: Ollama (Simplest)**
 ```bash
 ollama pull minicpm-v:8b
-ollama pull nomic-embed-text # And you need this one.
+ollama pull nomic-embed-text
 ```
-
-To make any model changes: `src/epstein_graphrag/config.py`
 
 ### Neo4j
 
@@ -85,33 +115,36 @@ NEO4J_PASSWORD=change_me
 
 The CLI entry point is `egr` (defined in `pyproject.toml`).
 
-### 1. Classify Documents
+### 1. Classify Documents (Extracts text from 89% of files!)
 
 ```bash
-egr classify /path/to/pdf/directory
+egr classify /path/to/pdf/directory -w 12
 ```
 
-Parker or Coog (let's be real, no one else will get this far) please start with dataset 8 and work your way backwards. I'm going forward but alone will take ~159 days.
+This command:
+- Classifies all PDFs by type (text_document, photograph, mixed, unknown)
+- **Automatically extracts text** from digital PDFs using pdfplumber
+- Saves extracted text to `data/processed/` (these files skip OCR!)
+- Uses parallel workers for speed (`-w 12` = 12 workers)
 
-Outputs: `data/manifest.json`
+Outputs: `data/manifest.json` + `data/processed/*.json` for text documents
 
-Each classify command MERGEs to the manifest adding the new batch. So, it's resume-safe but, if you want to keep batches organized, archive each manifest set and classify a new manifest.json. or point the `egr ocr` command to a custom manifest with `--manifest custom_manifest.json`
-
-### 2. Run OCR
+### 2. Run OCR (Only for scanned documents - 11% of files)
 
 ```bash
-egr ocr 
+# With vLLM (fastest)
+egr ocr --ocr-provider vllm --num-workers 5
+
+# With LM Studio
+egr ocr --ocr-provider lmstudio --num-workers 3
+
+# With Ollama
+egr ocr --ocr-provider ollama --num-workers 1
 ```
 
-Uses the manifest to process all PDFs through the VLM (I'm using lmstudio-community/Qwen3-VL-8B-MLX). Outputs to `data/processed/`.
-Key CLI Options for OCR
+OCR automatically **skips files already in `data/processed/`** (from classify step).
 
-```bash
---ocr-provider -lmstudio # Choose ollama or lmstudio
---num-workers -w 3 # Number of parallel workers
---lm-base-url -http://localhost:1234/v1 # LM Studio base URL (LMStuido has options)
---manifest -data/manifest.json # Custom manifest path
-```
+Outputs to `data/processed/`.
 
 ### 3. Extract Entities
 
@@ -120,10 +153,7 @@ egr extract --num-workers 3
 ```
 
 Multi-provider strategy (fallback chain):
-
-@ToDo -  Update to replace Ollama and use LMStudio for concurrency
-
-1. MiniCPM-V (local, via Ollama)
+1. Local model (Ollama/LM Studio)
 2. DeepSeek API
 3. Gemini 2.5 Flash
 
@@ -153,56 +183,104 @@ egr embed --label all
 
 Generate 768d vectors using `nomic-embed-text` for semantic search.
 
+## Distributed Processing
+
+For processing at scale, see `docs/DISTRIBUTED_DEPLOYMENT.md`.
+
+### Multi-Machine Setup
+
+Run OCR across multiple machines:
+
+```bash
+# On RTX PC
+./scripts/start_server_rtx.sh
+
+# On Mac
+./scripts/start_server_mac.sh
+
+# Coordinate from any machine
+python scripts/multi_machine_ocr.py \
+    --servers http://pc-ip:8000/v1,http://mac-ip:8001/v1 \
+    --manifest data/manifest.json
+```
+
+### Cloud Deployment (Vast.ai)
+
+Process on cheap cloud GPUs (~$0.02-0.05/hr):
+
+```bash
+# Split manifest for distributed workers
+python deploy/split_manifest.py --chunks 20
+
+# Deploy workers on Vast.ai
+# See deploy/vast-ai-template.sh for instructions
+```
+
+### Docker
+
+```bash
+# vLLM-based (fastest)
+docker build -f Dockerfile.vllm -t epstein-graphrag:vllm .
+
+# Ollama-based (simpler)
+docker build -f Dockerfile.worker -t epstein-graphrag:worker .
+```
+
 ## Project Structure
 
-```filesys
+```
 epstein-graphrag/
 ├── data/
-│   ├── manifest.json           # Document classification manifest
-│   ├── alias_table.json        # Name resolution mappings
-│   ├── schema_alerts.jsonl     # Schema validation alerts
-│   ├── processed/              # OCR output JSON files
+│   ├── manifest.json           # Document classification manifest (849K docs)
+│   ├── processed/              # Extracted text (756K from pdfplumber + OCR results)
 │   ├── extracted/              # Entity extraction JSON files
+│   ├── alias_table.json        # Name resolution mappings
+│   └── schema_alerts.jsonl     # Schema validation alerts
 ├── src/epstein_graphrag/
-│   ├── __init__.py
 │   ├── cli.py                  # Command-line interface (egr)
 │   ├── config.py               # Configuration management
-│   ├── classify/               # Document classification
-│   │   └── classifier.py
-│   ├── ocr/                    # OCR pipeline
-│   │   ├── marker_pipeline_ollama.py
-│   │   ├── marker_pipeline.py
-│   │   ├── ollama_ocr.py
-│   │   ├── lmstudio_ocr.py
-│   │   ├── deepseek_ocr.py
-│   │   ├── forensic_prompts.py
-│   │   ├── forensic_marker_processor.py
-│   │   ├── quality_check.py
+│   ├── classify/
+│   │   └── classifier.py       # Parallel PDF classification + text extraction
+│   ├── ocr/
+│   │   ├── vllm_ocr.py         # vLLM backend (fastest)
+│   │   ├── lmstudio_ocr.py     # LM Studio backend
+│   │   ├── ollama_ocr.py       # Ollama backend
+│   │   ├── forensic_prompts.py # Forensic-aware OCR prompts
+│   │   ├── quality_check.py    # Hallucination detection
 │   │   ├── duplicate_detector.py
-│   │   └── redaction_merger.py
-│   ├── extract/                # Entity extraction
+│   │   └── redaction_merger.py # Merge redacted duplicates
+│   ├── extract/
 │   │   ├── multi_provider_extractor.py
-│   │   ├── entity_extractor.py
-│   │   ├── prompts.py
+│   │   ├── prompts.py          # Entity extraction prompts
 │   │   └── schema_validator.py
-│   ├── graph/                  # Neo4j operations
-│   │   ├── schema.py
-│   │   ├── ingest.py
-│   │   └── dedup.py
-│   ├── embeddings/             # Vector embeddings
-│   │   └── embed.py
-│   ├── query/                  # Query engine
-│   │   ├── engine.py
-│   │   ├── cypher_gen.py
-│   │   ├── hybrid_search.py
-│   │   └── pattern_detector.py
-│   └── output/                 # Output utilities
-├── tests/
+│   ├── graph/
+│   │   ├── schema.py           # Neo4j schema creation
+│   │   ├── ingest.py           # MERGE-based ingestion
+│   │   └── dedup.py            # Alias resolution
+│   ├── embeddings/
+│   │   └── embed.py            # Vector embedding generation
+│   └── query/
+│       ├── engine.py           # Query engine
+│       ├── cypher_gen.py       # Cypher generation
+│       └── hybrid_search.py    # Vector + graph search
+├── scripts/
+│   ├── start_server_rtx.sh     # Start vLLM on NVIDIA GPU
+│   ├── start_server_mac.sh     # Start vLLM-MLX on Mac
+│   ├── multi_machine_ocr.py    # Coordinate multiple machines
+│   └── volunteer.sh            # Easy contributor script
+├── deploy/
+│   ├── split_manifest.py       # Split work for distributed processing
+│   ├── vast-ai-template.sh     # Cloud deployment guide
+│   ├── vllm-entrypoint.sh      # Docker entrypoint (vLLM)
+│   └── worker-entrypoint.sh    # Docker entrypoint (Ollama)
+├── docs/
+│   └── DISTRIBUTED_DEPLOYMENT.md
+├── Dockerfile                  # Basic container
+├── Dockerfile.vllm             # vLLM-based (fastest)
+├── Dockerfile.worker           # Ollama-based (simpler)
 ├── pyproject.toml
 ├── uv.lock
-├── AGENTS.md
-├── .env.example                # Example environment configuration
-└── .gitignore
+└── AGENTS.md
 ```
 
 ## Entity Schema
@@ -272,7 +350,7 @@ Edit `src/epstein_graphrag/config.py` to modify:
 
 ## Notes
 
-## Maping the Epstein Files
+## Mapping the Epstein Files
 
 Thousands of pages of court filings, flight logs, deposition transcripts, and photographs from the Jeffrey Epstein case sit in public document repositories. Individually, each page tells a fragment of a story. A name here, a flight date there, a location mentioned in passing. The connections between them — the patterns that reveal who knew what, who went where, and who looked the other way — remain buried in scanned PDFs that no single person could read in a lifetime.
 
@@ -282,13 +360,19 @@ I built a pipeline to read them all, extract every name, date, location, and all
 
 The documents released, like other "publicly available" records, have data that are obscured to protect congress' wealthy benefactors and keep the hand of the oligarchy, which is strangling democracy, hidden. Many are scanned at poor resolution, contain redactions — over names and emails of perpatrators, dates, and descriptions. Others are photographs with no searchable text at all. Government agencies released these files in formats that make systematic review difficult: thousands of individual PDFs, no index, no descriptive naming, no metadata.
 
-This is not accidental. When you scatter evidence across 12ish separate document sets, redact key names, and release it all as images rather than text, you build a wall between the public and the truth. A determined reader might connect two documents. Connecting 2.7 million requires a machine.
+This is not accidental. When you scatter evidence across 12 separate document sets, redact key names, and release it all as images rather than text, you build a wall between the public and the truth. A determined reader might connect two documents. Connecting 850,000 requires a machine.
 
 ## Reading the Docs
 
-The first problem is the documents are uploaded as images on PDFs so copying text cannot be done. Eagles can't simply fly the ring to morodor. However, optical character recognition is no possible. Standard OCR tools treat every document the same — a receipt, a novel, a legal deposition all get the same processing. These documents demand more.
+The first assumption was that all 850,000 documents were scanned images requiring expensive vision-model OCR. **This turned out to be wrong.**
 
-This pipeline uses forensic OCR prompts that tell the vision model what it is looking at. The model knows it is reading legal evidence. It knows to preserve every name exactly as written, to flag redacted regions, and to note text still visible beneath sloppy black-marker redactions. That last point matters: some redactions were done so poorly that the underlying text remains legible. The pipeline catches those.
+After classifying every PDF, we discovered:
+- **89% (756,340 files) are digital PDFs** with embedded, extractable text
+- **11% (93,163 files) are scanned images** requiring vision-model OCR
+
+The classifier extracts text from digital PDFs automatically using pdfplumber. Only the 11% of scanned documents need the expensive VLM pipeline.
+
+For those scanned documents, the pipeline uses forensic OCR prompts that tell the vision model what it is looking at. The model knows it is reading legal evidence. It knows to preserve every name exactly as written, to flag redacted regions, and to note text still visible beneath sloppy black-marker redactions. That last point matters: some redactions were done so poorly that the underlying text remains legible. The pipeline catches those.
 
 Each document goes through quality validation after OCR. The system checks for hallucinated text (a common failure where AI models invent plausible-sounding content), repetitive output, and gibberish sequences. Bad OCR output gets flagged and reprocessed rather than silently polluting the dataset.
 

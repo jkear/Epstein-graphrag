@@ -37,16 +37,28 @@ def main(ctx: click.Context, verbose: bool) -> None:
 
 @main.command()
 @click.argument("data_dir", type=click.Path(exists=True))
+@click.option(
+    "--num-workers",
+    "-w",
+    type=int,
+    default=None,
+    help="Number of parallel workers (default: CPU count)",
+)
 @click.pass_context
-def classify(ctx: click.Context, data_dir: str) -> None:
+def classify(ctx: click.Context, data_dir: str, num_workers: int | None) -> None:
     """Classify all PDFs in a directory."""
     from pathlib import Path
+    import multiprocessing as mp
 
     from epstein_graphrag.classify.classifier import classify_batch
 
     config = ctx.obj["config"]
-    results = classify_batch(Path(data_dir), config.manifest_path)
-    console.print(f"Classified {len(results)} new documents")
+    
+    workers = num_workers or mp.cpu_count()
+    console.print(f"[cyan]Classifying with {workers} parallel workers[/cyan]")
+    
+    results = classify_batch(Path(data_dir), config.manifest_path, num_workers=workers)
+    console.print(f"[green]Classified {len(results)} new documents[/green]")
 
 
 @main.command()
@@ -57,9 +69,9 @@ def classify(ctx: click.Context, data_dir: str) -> None:
 )
 @click.option(
     "--ocr-provider",
-    type=click.Choice(["ollama", "lmstudio"]),
+    type=click.Choice(["ollama", "lmstudio", "vllm"]),
     default="ollama",
-    help="OCR provider to use (default: ollama)",
+    help="OCR provider: ollama, lmstudio, or vllm (fastest)",
 )
 @click.option(
     "--lm-base-url",
@@ -327,6 +339,215 @@ def embed(ctx: click.Context, label: str) -> None:
                        f"{t['skipped']:3d} skipped  {status}")
 
     console.print(f"\n  Total: {result['total_embedded']} vectors generated")
+
+
+@main.command(name="vision-ocr")
+@click.option(
+    "--manifest",
+    type=click.Path(exists=True),
+    help="Path to manifest file (default: data/manifest.json)",
+)
+@click.option(
+    "--ocr-provider",
+    type=click.Choice(["lmstudio", "ollama", "gemini"]),
+    default="lmstudio",
+    help="OCR provider (default: lmstudio)",
+)
+@click.option(
+    "--lm-base-url",
+    type=str,
+    default="http://localhost:1234/v1",
+    help="LM Studio base URL (default: http://localhost:1234/v1)",
+)
+@click.option(
+    "--ocr-model",
+    type=str,
+    default=None,
+    help="Vision model name/ID (auto-detect for LM Studio)",
+)
+@click.option(
+    "--num-workers", "-w",
+    type=int,
+    default=1,
+    help="Number of parallel workers (default: 1)",
+)
+@click.option(
+    "--dpi",
+    type=int,
+    default=300,
+    help="DPI for PDF-to-image conversion (default: 300, try 150 for speed)",
+)
+@click.option(
+    "--no-resume",
+    is_flag=True,
+    help="Reprocess existing files",
+)
+@click.option(
+    "--no-marker-fallback",
+    is_flag=True,
+    help="Disable Marker fallback (vision-only, fastest mode)",
+)
+@click.pass_context
+def vision_ocr(
+    ctx: click.Context,
+    manifest: str | None,
+    ocr_provider: str,
+    lm_base_url: str,
+    ocr_model: str | None,
+    num_workers: int,
+    dpi: int,
+    no_resume: bool,
+    no_marker_fallback: bool,
+) -> None:
+    """Vision-first OCR: photograph analysis first, Marker fallback for text docs.
+
+    Faster than 'egr ocr' for image-heavy corpora. Handles mixed/photograph
+    docs correctly by routing to visual analysis instead of text-only OCR.
+
+    \b
+    Examples:
+        egr vision-ocr                          # Full manifest, LM Studio
+        egr vision-ocr --manifest data/triage/split_0_image.json -w 2
+        egr vision-ocr --ocr-provider gemini    # Use Gemini API (fast + cheap)
+        egr vision-ocr --dpi 150 --no-marker-fallback  # Maximum speed
+    """
+    from pathlib import Path
+
+    from epstein_graphrag.ocr.fast_ocr_runner import run_batch
+
+    config = ctx.obj["config"]
+    manifest_path = Path(manifest) if manifest else config.manifest_path
+
+    if not manifest_path.exists():
+        console.print(f"[red]Error: Manifest not found at {manifest_path}[/red]")
+        return
+
+    console.print(f"[cyan]OCR provider: {ocr_provider}[/cyan]")
+    console.print(f"[cyan]DPI: {dpi}[/cyan]")
+    console.print(f"[cyan]Workers: {num_workers}[/cyan]")
+    console.print(f"[cyan]Marker fallback: {not no_marker_fallback}[/cyan]")
+
+    stats = run_batch(
+        manifest_path=manifest_path,
+        output_dir=config.processed_dir,
+        ocr_provider=ocr_provider,
+        ocr_model=ocr_model,
+        num_workers=num_workers,
+        lm_base_url=lm_base_url,
+        resume=not no_resume,
+        marker_fallback=not no_marker_fallback,
+        dpi=dpi,
+    )
+
+    console.print("\n[green]Vision-first OCR complete:[/green]")
+    console.print(f"  Total:     {stats['total']}")
+    console.print(f"  Processed: {stats['processed']}")
+    console.print(f"  Skipped:   {stats['skipped']}")
+    console.print(f"  Failed:    {stats['failed']}")
+
+    if stats['failed'] > 0:
+        console.print("\n[yellow]Failed documents:[/yellow]")
+        for doc_id in stats['failed_docs'][:20]:
+            console.print(f"  - {doc_id}")
+        if len(stats['failed_docs']) > 20:
+            console.print(f"  ... and {len(stats['failed_docs']) - 20} more")
+
+
+@main.command()
+@click.option(
+    "--manifest",
+    type=click.Path(exists=True),
+    help="Path to manifest file (default: data/manifest.json)",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(),
+    default="data/triage",
+    help="Output directory for triage results (default: data/triage)",
+)
+@click.option(
+    "--splits",
+    type=int,
+    default=4,
+    help="Number of splits for parallel processing (default: 4)",
+)
+@click.option(
+    "--remaining/--all",
+    default=True,
+    help="Only include unprocessed docs (default: --remaining)",
+)
+@click.option(
+    "--processed-dir",
+    type=click.Path(),
+    default="data/processed",
+    help="Directory to check for already-processed files (default: data/processed)",
+)
+@click.pass_context
+def split(ctx: click.Context, manifest: str | None, output_dir: str, splits: int, remaining: bool, processed_dir: str) -> None:
+    """Split manifest for parallel OCR processing.
+
+    By default, filters out already-processed docs before splitting.
+    Use --all to include everything.
+
+    \b
+    Examples:
+        egr split                          # 4-way split of remaining docs
+        egr split --all                    # 4-way split of ALL docs
+        egr split --splits 2 --remaining   # 2-way split of unprocessed only
+        egr split --manifest custom.json --splits 2
+    """
+    import json
+    from pathlib import Path
+
+    from epstein_graphrag.ocr.fast_triage import triage_manifest
+
+    config = ctx.obj["config"]
+    manifest_path = Path(manifest) if manifest else config.manifest_path
+    out_path = Path(output_dir)
+
+    if not manifest_path.exists():
+        console.print(f"[red]Error: Manifest not found at {manifest_path}[/red]")
+        return
+
+    # Filter to remaining-only if requested
+    if remaining:
+        proc_path = Path(processed_dir)
+        full_manifest = json.loads(manifest_path.read_text())
+        already_done = set()
+        if proc_path.exists():
+            for f in proc_path.iterdir():
+                if f.suffix == ".json" and not f.name.endswith(".error.json"):
+                    already_done.add(f.stem)
+
+        remaining_manifest = {k: v for k, v in full_manifest.items() if k not in already_done}
+        console.print(f"[cyan]Filtering: {len(full_manifest)} total, {len(already_done)} done, [bold]{len(remaining_manifest)} remaining[/bold][/cyan]")
+
+        if not remaining_manifest:
+            console.print("[green]All documents already processed![/green]")
+            return
+
+        # Write filtered manifest
+        out_path.mkdir(parents=True, exist_ok=True)
+        filtered_path = out_path / "remaining_manifest.json"
+        filtered_path.write_text(json.dumps(remaining_manifest, indent=2))
+        manifest_path = filtered_path
+
+    console.print(f"[cyan]Triaging and splitting {manifest_path.name} into {splits} chunks...[/cyan]")
+
+    stats = triage_manifest(manifest_path, out_path, splits)
+
+    console.print("\n[green]Triage complete:[/green]")
+    console.print(f"  Total documents:    {stats['total']}")
+    console.print(f"  Text (Marker OK):   {stats['text']}")
+    console.print(f"  Image (vision OCR): {stats['image']}")
+
+    if splits > 1:
+        console.print(f"\n[cyan]Run in separate terminals:[/cyan]")
+        for i in range(splits):
+            console.print(f"  egr vision-ocr --manifest {out_path}/split_{i}_image.json -w 2")
+        console.print(f"\n[cyan]Text docs (slower, uses Marker):[/cyan]")
+        for i in range(splits):
+            console.print(f"  egr vision-ocr --manifest {out_path}/split_{i}_text.json -w 2")
 
 
 @main.command()

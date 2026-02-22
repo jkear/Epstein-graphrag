@@ -22,8 +22,10 @@ venv/
 docs/
 
 # Data (keep structure, ignore content)
+data/manifest.json
 data/processed/*.json
 data/extracted/*.json
+data/triage/*.json
 !data/processed/.gitkeep
 !data/extracted/.gitkeep
 data/processed_failed_backup/*

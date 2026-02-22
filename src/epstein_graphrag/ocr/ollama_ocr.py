@@ -14,6 +14,7 @@ import requests
 from pdf2image import convert_from_path
 
 from epstein_graphrag.ocr.forensic_prompts import get_forensic_ocr_prompt
+from epstein_graphrag.ocr.quality_check import clean_repetition_loops
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def pdf_to_base64_images(pdf_path: Path, dpi: int = 300) -> list[str]:
 
 def ollama_vision_ocr(
     base64_image: str,
-    model: str = "minicpm-v:8b",
+    model: str | None = None,
     prompt: str | None = None,
     use_forensic_context: bool = True,
     document_type: str = "general",
@@ -71,6 +72,8 @@ def ollama_vision_ocr(
     Returns:
         dict with 'text' (extracted text) and 'metadata' (model info)
     """
+    model = model or "minicpm-v:8b"
+
     if prompt is None and use_forensic_context:
         prompt = get_forensic_ocr_prompt(
             document_type=document_type,
@@ -85,7 +88,19 @@ Output only the extracted text without any additional commentary."""
     try:
         response = requests.post(
             "http://localhost:11434/api/generate",
-            json={"model": model, "prompt": prompt, "images": [base64_image], "stream": False},
+            json={
+                "model": model,
+                "prompt": prompt,
+                "images": [base64_image],
+                "stream": False,
+                "keep_alive": -1,
+                "options": {
+                    "temperature": 0.1,
+                    "repeat_penalty": 1.5,
+                    "frequency_penalty": 0.5,
+                    "num_predict": 1256,
+                },
+            },
             timeout=300,
         )
         response.raise_for_status()
@@ -93,10 +108,27 @@ Output only the extracted text without any additional commentary."""
         result = response.json()
         extracted_text = result.get("response", "")
 
-        return {"text": extracted_text, "metadata": {"model": model, "engine": "ollama-vision"}}
+        # Clean repetition loops (model stuck repeating same line)
+        extracted_text, lines_removed = clean_repetition_loops(extracted_text)
+        if lines_removed > 0:
+            logger.warning(
+                f"Cleaned {lines_removed} repeated lines from Ollama output"
+            )
+
+        return {
+            "text": extracted_text,
+            "metadata": {
+                "model": model,
+                "engine": "ollama-vision",
+                "repetition_lines_removed": lines_removed,
+            },
+        }
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Ollama API request failed: {e}")
+        resp_body = ""
+        if hasattr(e, "response") and e.response is not None:
+            resp_body = e.response.text[:500]
+        logger.error(f"Ollama API request failed: {e}\n  Response body: {resp_body}\n  Model: {model}")
         raise
     except Exception as e:
         logger.error(f"OCR processing failed: {e}")
@@ -105,7 +137,7 @@ Output only the extracted text without any additional commentary."""
 
 def extract_text_from_pdf(
     pdf_path: Path,
-    model: str = "minicpm-v:8b",
+    model: str | None = None,
     dpi: int = 300,
     use_forensic_context: bool = True,
     document_type: str = "general",
@@ -125,6 +157,7 @@ def extract_text_from_pdf(
     Returns:
         Tuple of (combined_text, metadata)
     """
+    model = model or "minicpm-v:8b"
     logger.info(f"Processing PDF with Ollama OCR: {pdf_path.name}")
 
     # Convert PDF to base64 images
@@ -166,7 +199,7 @@ def extract_text_from_pdf(
 
 def analyze_photograph(
     pdf_path: Path,
-    model: str = "minicpm-v:8b",
+    model: str | None = None,
     use_forensic_context: bool = True,
 ) -> tuple[str, dict]:
     """
@@ -182,6 +215,7 @@ def analyze_photograph(
     Returns:
         Tuple of (analysis_text, metadata)
     """
+    model = model or "minicpm-v:8b"
     logger.info(f"Analyzing photograph with Ollama: {pdf_path.name}")
 
     # Convert first page only (photographs are typically single page)

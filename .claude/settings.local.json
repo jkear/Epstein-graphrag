@@ -4,7 +4,10 @@
       "Bash(python3:*)",
       "Bash(uv run:*)",
       "Bash(uv pip list:*)",
-      "Bash(.venv/bin/python:*)"
+      "Bash(.venv/bin/python:*)",
+      "Bash(ls:*)",
+      "Bash(curl:*)",
+      "mcp__claude_ai_Firecrawl__firecrawl_scrape"
     ]
   }
 }

@@ -17,6 +17,7 @@ import requests
 from pdf2image import convert_from_path
 
 from epstein_graphrag.ocr.forensic_prompts import get_forensic_ocr_prompt
+from epstein_graphrag.ocr.quality_check import clean_repetition_loops
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +138,10 @@ Output only the extracted text without any additional commentary."""
                         ],
                     }
                 ],
-                "max_tokens": 4096,
-                "temperature": 0.0,  # Deterministic for OCR
+                "max_tokens": 1256,
+                "temperature": 0.1,
+                "frequency_penalty": 0.5,
+                "repetition_penalty": 1.5,
             },
             timeout=300,
         )
@@ -147,9 +150,20 @@ Output only the extracted text without any additional commentary."""
         result = response.json()
         extracted_text = result["choices"][0]["message"]["content"]
 
+        # Clean repetition loops (model stuck repeating same line)
+        extracted_text, lines_removed = clean_repetition_loops(extracted_text)
+        if lines_removed > 0:
+            logger.warning(
+                f"Cleaned {lines_removed} repeated lines from LM Studio output"
+            )
+
         return {
             "text": extracted_text,
-            "metadata": {"model": model, "engine": "lmstudio-vision"},
+            "metadata": {
+                "model": model,
+                "engine": "lmstudio-vision",
+                "repetition_lines_removed": lines_removed,
+            },
         }
 
     except requests.exceptions.RequestException as e:
